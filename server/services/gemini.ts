@@ -53,7 +53,7 @@ export async function generateQuestionsFromPdf(input: {
   const prompt = input.prompt?.trim() || DEFAULT_PROMPT;
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-1.5-flash', // Using a modern, correct model name
+    model: 'gemini-2.5-flash', // Switch to the 2.5 Pro model for potentially wider availability
     generationConfig: {
       responseMimeType: 'application/json',
       temperature: 0.4,

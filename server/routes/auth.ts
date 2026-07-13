@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { UserModel } from '../models/User.js';
 import { hashPassword, verifyPassword } from '../services/password.js';
+import { sendRegistrationEmail } from '../services/email.js';
 
 export const authRouter = Router();
 
@@ -13,6 +14,7 @@ function sanitizeUser(user: {
   xp: number;
   maxXp: number;
   coins: number;
+  credits: number;
   avatarId: string;
   isPremium: boolean;
   createdAt?: Date;
@@ -26,6 +28,7 @@ function sanitizeUser(user: {
     xp: user.xp,
     maxXp: user.maxXp,
     coins: user.coins,
+    credits: user.credits,
     avatarId: user.avatarId,
     isPremium: user.isPremium,
     createdAt: user.createdAt,
@@ -64,14 +67,17 @@ authRouter.post('/register', async (req, res, next) => {
       institution: institution ? String(institution).trim() : 'Academia StudyClash',
       bio: bio ? String(bio).trim() : '¡Nuevo guerrero del conocimiento listo para ganar en StudyClash!',
       passwordHash,
+      authProvider: 'local',
       level: 1,
       xp: 0,
       maxXp: 1000,
       coins: 100,
+      credits: 5,
       avatarId: 'cyber_scholar',
       isPremium: false,
     });
 
+    await sendRegistrationEmail(normalizedEmail, normalizedUsername);
     res.status(201).json({ user: sanitizeUser(user) });
   } catch (error) {
     next(error);
@@ -99,6 +105,11 @@ authRouter.post('/login', async (req, res, next) => {
 
     if (!user) {
       res.status(401).json({ error: 'La cuenta no existe. Debes registrarte primero.' });
+      return;
+    }
+
+    if (user.authProvider !== 'local') {
+      res.status(400).json({ error: 'Esta cuenta usa inicio de sesión con Google. Usa el botón de Google para ingresar.' });
       return;
     }
 

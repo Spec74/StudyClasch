@@ -1,6 +1,6 @@
 import { Server as SocketIOServer, Socket } from 'socket.io';
-import { RoomModel } from '../models/Room.js'; // RoomPlayer y RoomRecord se importan de types
-import { RoomPlayer, RoomRecord, TriviaQuestion, GameMode, Difficulty } from '../types.js'; // Importar RoomPlayer y RoomRecord desde types
+import { RoomModel } from '../models/Room.js';
+import { RoomPlayer, RoomRecord, TriviaQuestion } from '../types.js';
 
 // Extend Socket to include custom data
 interface CustomSocket extends Socket {
@@ -8,6 +8,50 @@ interface CustomSocket extends Socket {
     roomCode?: string;
     username?: string;
   };
+}
+
+interface GameAnswerPayload {
+  roomCode: string;
+  username: string;
+  questionId: number;
+  answer: 'A' | 'B' | 'C' | 'D' | null;
+  timeRemaining: number;
+}
+
+interface PlayerGameState {
+  answers: Array<{ questionId: number; answer: 'A' | 'B' | 'C' | 'D' | null; timeRemaining: number }>;
+  score: number;
+  correct: number;
+}
+
+interface GameSession {
+  roomCode: string;
+  questions: TriviaQuestion[];
+  players: Record<string, PlayerGameState>;
+}
+
+const gameSessions = new Map<string, GameSession>();
+
+function calculateScore(isCorrect: boolean, timeRemaining: number): number {
+  if (!isCorrect) {
+    return 0;
+  }
+  return 1000 + Math.max(0, Math.round(timeRemaining * 12));
+}
+
+function allPlayersFinished(session: GameSession): boolean {
+  return Object.values(session.players).every((playerState) => playerState.answers.length >= session.questions.length);
+}
+
+function makeLeaderboard(session: GameSession) {
+  return Object.entries(session.players)
+    .map(([username, stats]) => ({
+      username,
+      score: stats.score,
+      correct: stats.correct,
+      answered: stats.answers.length,
+    }))
+    .sort((a, b) => b.score - a.score);
 }
 
 interface JoinRoomPayload {
@@ -113,30 +157,102 @@ export function setupSocketIO(io: SocketIOServer) {
           return;
         }
 
-        // TODO: Implement checks for host and all players ready
-        // if (socket.data.username !== room.hostUsername) {
-        //   socket.emit('roomError', { message: 'Solo el anfitrión puede iniciar el juego.' });
-        //   return;
-        // }
-        // if (room.players.some(p => !p.isReady)) {
-        //   socket.emit('roomError', { message: 'No todos los jugadores están listos.' });
-        //   return;
-        // }
-
-        room.status = 'live'; // Change room status to 'live'
+        room.status = 'live';
         await room.save();
+
+        const session: GameSession = {
+          roomCode,
+          questions: room.questions as TriviaQuestion[],
+          players: {},
+        };
+
+        room.players.forEach((player) => {
+          session.players[player.username] = {
+            answers: [],
+            score: 0,
+            correct: 0,
+          };
+        });
+
+        gameSessions.set(roomCode, session);
 
         io.to(roomCode).emit('room:started', {
           roomCode: room.roomCode,
           status: room.status,
           questions: room.questions,
         });
-        // Also send a general state update
+        io.to(roomCode).emit('game:session', {
+          questionCount: session.questions.length,
+          mode: room.mode,
+          difficulty: room.difficulty,
+        });
         emitRoomState(io, room.toObject());
         console.log(`[Socket.IO] Sala ${roomCode} iniciada por ${socket.data.username}.`);
       } catch (error) {
         console.error(`[Socket.IO] Error al iniciar la sala ${roomCode}:`, error);
         socket.emit('roomError', { message: 'Error interno del servidor al iniciar la sala.' });
+      }
+    });
+
+    socket.on('game:answer', async (payload: GameAnswerPayload) => {
+      const { roomCode, username, questionId, answer, timeRemaining } = payload;
+      if (!roomCode || !username) {
+        socket.emit('roomError', { message: 'Datos de respuesta incompletos.' });
+        return;
+      }
+
+      const session = gameSessions.get(roomCode);
+      if (!session) {
+        socket.emit('roomError', { message: 'Sesión de juego no encontrada. Asegúrate de que la sala esté activa.' });
+        return;
+      }
+
+      const playerState = session.players[username];
+      if (!playerState) {
+        socket.emit('roomError', { message: 'Jugador no registrado en esta sesión.' });
+        return;
+      }
+
+      if (playerState.answers.some((item) => item.questionId === questionId)) {
+        return; // Ya respondido
+      }
+
+      const question = session.questions.find((item) => item.id === questionId);
+      if (!question) {
+        socket.emit('roomError', { message: 'Pregunta no encontrada.' });
+        return;
+      }
+
+      const isCorrect = answer === question.correctOption;
+      playerState.answers.push({ questionId, answer, timeRemaining });
+      if (isCorrect) {
+        playerState.score += calculateScore(isCorrect, timeRemaining);
+        playerState.correct += 1;
+      }
+
+      io.to(roomCode).emit('game:player:update', {
+        username,
+        score: playerState.score,
+        correct: playerState.correct,
+        answered: playerState.answers.length,
+        total: session.questions.length,
+      });
+
+      if (allPlayersFinished(session)) {
+        const leaderboard = makeLeaderboard(session);
+        io.to(roomCode).emit('room:finished', {
+          leaderboard,
+          winner: leaderboard[0]?.username ?? null,
+        });
+
+        const room = await RoomModel.findOne({ roomCode });
+        if (room) {
+          room.status = 'finished';
+          await room.save();
+          emitRoomState(io, room.toObject());
+        }
+
+        gameSessions.delete(roomCode);
       }
     });
 

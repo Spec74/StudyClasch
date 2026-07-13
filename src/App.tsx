@@ -13,6 +13,8 @@ import PremiumModal from './components/PremiumModal';
 import AuthView from './components/AuthView';
 import { Home, Gamepad2, ShoppingBag, User, Coins, LogOut } from 'lucide-react';
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4001';
+
 export default function App() {
   // --- Navigation & Flow State ---
   const [currentScreen, setCurrentScreen] = useState<AppScreen>(AppScreen.HOME);
@@ -42,6 +44,7 @@ export default function App() {
       maxXp: 3000,
       coins: 150,
       avatarId: 'cyber_scholar',
+      credits: 5,
       isPremium: false
     };
   });
@@ -52,25 +55,52 @@ export default function App() {
   // --- Computed Active Avatar Image ---
   const activeAvatarImage = cosmetics.find(c => c.id === user.avatarId)?.image || cosmetics[0].image;
 
-  // --- Premium toggle handler ---
-  const handleTogglePremium = (isPremium: boolean) => {
-    setUser(prev => ({
-      ...prev,
-      isPremium
-    }));
+  // --- Premium activation handler ---
+  const handleActivatePremium = async (preferenceId: string, collectionId?: string) => {
+    if (!user.email) {
+      throw new Error('El correo del usuario es necesario para activar Premium.');
+    }
 
-    // If they became premium, unlock exclusive premium skins immediately
-    setCosmetics(prev => 
-      prev.map(item => {
-        if (item.isPremiumExclusive) {
-          return {
-            ...item,
-            status: isPremium ? 'unlocked' : 'locked'
-          };
-        }
-        return item;
-      })
+    const response = await fetch(`${API_BASE_URL}/api/payments/activate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email: user.email,
+        preferenceId,
+        collectionId,
+      }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.error ?? 'No se pudo activar Premium.');
+    }
+
+    const updatedUser = payload.user;
+    if (!updatedUser) {
+      throw new Error('No se recibió información de usuario actualizada.');
+    }
+
+    setUser((prev) => {
+      const nextUser = {
+        ...prev,
+        ...updatedUser,
+      };
+      localStorage.setItem('studyclash_current_user', JSON.stringify(nextUser));
+      return nextUser;
+    });
+
+    setCosmetics((prev) =>
+      prev.map((item) =>
+        item.isPremiumExclusive
+          ? { ...item, status: 'unlocked' }
+          : item,
+      ),
     );
+
+    setIsPremiumOpen(false);
   };
 
   // --- Transaction: Buy Cosmetic Skin ---
@@ -187,6 +217,7 @@ export default function App() {
       xp: 2400,
       maxXp: 3000,
       coins: 150,
+      credits: 5,
       avatarId: 'cyber_scholar',
       isPremium: false
     });
@@ -402,7 +433,9 @@ export default function App() {
         isOpen={isPremiumOpen}
         onClose={() => setIsPremiumOpen(false)}
         isPremium={user.isPremium}
-        onTogglePremium={handleTogglePremium}
+        username={user.username}
+        userEmail={user.email}
+        onPurchaseSuccess={handleActivatePremium}
       />
     </div>
   );

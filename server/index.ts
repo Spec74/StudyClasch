@@ -1,15 +1,16 @@
 import dotenv from 'dotenv';
-import { createServer } from 'node:http';
-import { Server as SocketIOServer } from 'socket.io';
-import { app } from './app.js';
-import { connectDatabase } from './db.js'; 
-import { setupSocketIO } from './socket/handlers.js'; // Import the new handlers
 
 dotenv.config({ path: '.env.local' });
 dotenv.config();
 
+import { createServer } from 'node:http';
+import { Server as SocketIOServer } from 'socket.io';
+import { connectDatabase } from './db.js';
+import { setupSocketIO } from './socket/handlers.js';
+const { app } = await import('./app.js');
+
 const PORT = Number(process.env.PORT ?? 4001);
-const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_URI = process.env.MONGODB_URI ?? 'mongodb://studyclash:studyclash123@localhost:27017/StudyClash?authSource=admin';
 
 async function main() {
   try {

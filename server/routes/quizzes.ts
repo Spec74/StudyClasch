@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { QuizModel } from '../models/Quiz.js';
+import { UserModel } from '../models/User.js';
 import { isDatabaseConnected } from '../db.js';
 import { generateQuestionsFromPdf } from '../services/gemini.js';
 import type { GenerateQuizRequestBody } from '../types.js';
@@ -42,11 +43,25 @@ quizzesRouter.get('/:id', async (req, res, next) => {
 
 quizzesRouter.post('/generate', async (req, res, next) => {
   try {
-    const body = req.body as GenerateQuizRequestBody;
+    const body = req.body as GenerateQuizRequestBody & { email?: string };
 
     if (!body?.pdfBase64) {
       res.status(400).json({ error: 'pdfBase64 is required.' });
       return;
+    }
+
+    let user = null;
+    if (body.email) {
+      user = await UserModel.findOne({ email: String(body.email).trim().toLowerCase() });
+    }
+
+    if (user && !user.isPremium) {
+      if (typeof user.credits !== 'number' || user.credits <= 0) {
+        res.status(402).json({ error: 'No tienes créditos suficientes para utilizar Gemini. Por favor compra Premium o recarga créditos.' });
+        return;
+      }
+      user.credits -= 1;
+      await user.save();
     }
 
     const generated = await generateQuestionsFromPdf({

@@ -8,7 +8,7 @@ import {
   Trash2, ArrowRight, Play, Users, Copy, Check, Timer, 
   HelpCircle, Trophy, RotateCcw, LayoutDashboard, Star, Lock, Flame
 } from 'lucide-react';
-import { io, Socket } from 'socket.io-client'; // Importar Socket.IO Client
+import io from 'socket.io-client'; // Importar Socket.IO Client
 
 interface PlayViewProps {
   user: UserProfile;
@@ -109,6 +109,7 @@ export default function PlayView({
       body: JSON.stringify({
         fileName: file.name,
         pdfBase64,
+        email: user.email,
       }),
     });
 
@@ -201,13 +202,15 @@ export default function PlayView({
   };
 
   // Socket.IO instance (moved outside useEffect for broader access)
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const [socket, setSocket] = useState<ReturnType<typeof io> | null>(null);
 
   // Initialize socket once when component mounts
   useEffect(() => {
     const newSocket = io(apiBaseUrl);
     setSocket(newSocket);
-    return () => newSocket.disconnect();
+    return () => {
+      newSocket.disconnect();
+    };
   }, []); // Empty dependency array means this runs once on mount
 
   // --- Socket.IO Client Logic ---
@@ -236,7 +239,7 @@ export default function PlayView({
         setLobbyPlayers(data.players); // Update the list of players
       };
 
-      const onRoomStarted = (data: { roomCode: string; status: string; questions: TriviaQuestion[] }) => {
+      const onRoomStarted = (data: { roomCode: string; status: 'lobby' | 'live' | 'finished'; questions: TriviaQuestion[] }) => {
         console.log('[Frontend Socket] room:started recibido:', data);
         // Update room status and questions, then start the game
         setCurrentRoom(prev => prev ? { ...prev, status: data.status, questions: data.questions } : null);
@@ -244,21 +247,29 @@ export default function PlayView({
         handleStartQuiz(); // Transition to game screen
       };
 
-      const onRoomError = (data: { message: string }) => {
+          const onRoomError = (data: { message: string }) => {
         console.error('[Frontend Socket] Error de sala:', data.message);
         setGenerationError(data.message);
-        // Optionally, navigate away or show a persistent error
-        // onNavigate(AppScreen.HOME);
+      };
+
+      const onRoomFinished = (data: { leaderboard: Array<{ username: string; score: number; correct: number; answered: number }>; winner: string | null }) => {
+        console.log('[Frontend Socket] room:finished recibido:', data);
+        setCurrentScreen(AppScreen.PLAY_GAMEOVER);
+      };
+
+      const onPlayerUpdate = (update: { username: string; score: number; correct: number; answered: number; total: number }) => {
+        console.log('[Frontend Socket] game:player:update recibido:', update);
       };
 
       const onDisconnect = () => {
         console.log('[Frontend Socket] Desconectado del servidor.');
-        // Opcional: mostrar un mensaje al usuario o redirigir
       };
 
       // Attach event listeners
       socket.on('room:state', onRoomState);
       socket.on('room:started', onRoomStarted); // New event for game start
+      socket.on('game:player:update', onPlayerUpdate);
+      socket.on('room:finished', onRoomFinished);
       socket.on('roomError', onRoomError);
       socket.on('disconnect', onDisconnect);
 
@@ -273,6 +284,8 @@ export default function PlayView({
       return () => {
         socket?.off('room:state', onRoomState);
         socket?.off('room:started', onRoomStarted);
+        socket?.off('game:player:update', onPlayerUpdate);
+        socket?.off('room:finished', onRoomFinished);
         socket?.off('roomError', onRoomError);
         socket?.off('disconnect', onDisconnect);
         socket?.off('connect', joinRoom); // Clean up the 'once' listener too
@@ -335,17 +348,23 @@ export default function PlayView({
   };
 
   // --- Start Quiz Gameplay ---
-  // Este handler se modificará para emitir un evento de Socket.IO en el futuro
-  // Por ahora, simula el inicio del juego localmente.
   const handleStartGameAsHost = () => {
-    // En un entorno real, aquí se emitiría 'startGame' al servidor Socket.IO
-    // This assumes `socket` is available in scope, which it isn't directly in this handler.
-    // You'd need to pass the socket instance down or use a context.
-    // For now, let's simulate the emit and assume the server will respond with 'room:started'
-    // which will then trigger handleStartQuiz via the socket listener.
-    // For the demo, we'll just call handleStartQuiz directly if no socket is available.
-    // In a real app, only the host would trigger this, and it would go through the server.
-    socket?.emit('room:start', { roomCode });
+    if (!socket) {
+      setGenerationError('No hay conexión de sala. Recarga la página y vuelve a intentarlo.');
+      return;
+    }
+
+    if (!roomCode) {
+      setGenerationError('No hay un código de sala válido. Crea una sala antes de iniciar.');
+      return;
+    }
+
+    if (currentRoom?.hostUsername !== user.username) {
+      setGenerationError('Solo el anfitrión puede iniciar la partida.');
+      return;
+    }
+
+    socket.emit('room:start', { roomCode });
   };
   const handleStartQuiz = () => {
     setCurrentQuestionIndex(0);
@@ -385,6 +404,16 @@ export default function PlayView({
 
     const activeQuestion = questions[currentQuestionIndex];
     const isCorrect = option === activeQuestion.correctOption;
+
+    if (socket && roomCode) {
+      socket.emit('game:answer', {
+        roomCode,
+        username: user.username,
+        questionId: activeQuestion.id,
+        answer: option,
+        timeRemaining: gameCountdown,
+      });
+    }
 
     if (isCorrect) {
       setCorrectAnswersCount(prev => prev + 1);

@@ -31,6 +31,7 @@ export interface UserProfile {
   xp: number;
   maxXp: number;
   coins: number;
+  credits: number;
   avatarId: string;
   isPremium: boolean;
 }

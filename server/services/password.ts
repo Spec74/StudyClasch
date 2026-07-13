@@ -23,9 +23,12 @@ export async function hashPassword(password: string) {
   return `${salt}:${hash}`;
 }
 
-export async function verifyPassword(password: string, storedHash: string) {
-  const [salt, hash] = storedHash.split(':');
+export async function verifyPassword(password: string, storedHash?: string) {
+  if (!storedHash || typeof storedHash !== 'string') {
+    return false;
+  }
 
+  const [salt, hash] = storedHash.split(':');
   if (!salt || !hash) {
     return false;
   }

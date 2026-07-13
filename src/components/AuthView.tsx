@@ -1,18 +1,24 @@
-import { useState, FormEvent } from 'react';
+import { useState, useEffect, useRef, FormEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { UserProfile } from '../types';
-import { User, Mail, School, Lock, FileText, Eye, EyeOff, LogIn, UserPlus, Sparkles } from 'lucide-react';
+import { User, Mail, School, Lock, FileText, Eye, EyeOff, LogIn, UserPlus, Sparkles, Globe } from 'lucide-react';
 // @ts-ignore
 import image11 from '../assets/images/image_11_1783214081579.jpg';
 // @ts-ignore
 import image13 from '../assets/images/image_13_1783214092077.jpg';
+
+declare global {
+  interface Window {
+    google?: any;
+  }
+}
 
 interface AuthViewProps {
   onLoginSuccess: (user: UserProfile) => void;
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:4001';
-
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? '';
 function toUserProfile(user: UserProfile): UserProfile {
   return {
     username: user.username,
@@ -23,6 +29,7 @@ function toUserProfile(user: UserProfile): UserProfile {
     xp: user.xp,
     maxXp: user.maxXp,
     coins: user.coins,
+    credits: user.credits ?? 0,
     avatarId: user.avatarId,
     isPremium: user.isPremium,
   };
@@ -42,6 +49,87 @@ export default function AuthView({ onLoginSuccess }: AuthViewProps) {
 
   // Form error states
   const [error, setError] = useState<string>('');
+  const [googleError, setGoogleError] = useState<string>('');
+  const [isGoogleLoaded, setIsGoogleLoaded] = useState<boolean>(false);
+  const googleButtonRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID) {
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => {
+      if (window.google?.accounts?.id) {
+        window.google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          callback: async (response: any) => {
+            if (!response?.credential) {
+              setGoogleError('No se recibió credencial de Google.');
+              return;
+            }
+
+            setError('');
+            setGoogleError('');
+            setIsSubmitting(true);
+
+            try {
+              const tokenResponse = await fetch(`${API_BASE_URL}/api/auth/google/token`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ idToken: response.credential }),
+              });
+
+              const payload = await tokenResponse.json().catch(() => ({}));
+              if (!tokenResponse.ok) {
+                throw new Error(payload?.error ?? 'No se pudo iniciar sesión con Google.');
+              }
+
+              onLoginSuccess(toUserProfile(payload.user));
+            } catch (submitError) {
+              setError(submitError instanceof Error ? submitError.message : 'Ocurrió un error al iniciar sesión con Google.');
+            } finally {
+              setIsSubmitting(false);
+            }
+          },
+          auto_select: false,
+          cancel_on_tap_outside: true,
+        });
+
+        window.google.accounts.id.renderButton(googleButtonRef.current, {
+          type: 'standard',
+          theme: 'outline',
+          size: 'large',
+          text: 'signin_with',
+          shape: 'pill',
+          width: 310,
+        });
+
+        setIsGoogleLoaded(true);
+      } else {
+        setGoogleError('No se pudo cargar Google Identity Services.');
+      }
+    };
+    script.onerror = () => setGoogleError('No se pudo cargar la biblioteca de Google.');
+
+    document.body.appendChild(script);
+
+    return () => {
+      document.body.removeChild(script);
+    };
+  }, []);
+
+  const handleGoogleLogin = () => {
+    if (!window.google?.accounts?.id) {
+      setGoogleError('Google Identity no está disponible.');
+      return;
+    }
+
+    window.google.accounts.id.prompt();
+  };
 
   const handleToggleMode = () => {
     setIsLoginMode(prev => !prev);
@@ -241,12 +329,21 @@ export default function AuthView({ onLoginSuccess }: AuthViewProps) {
                 <span>{error}</span>
               </motion.div>
             )}
+            {googleError && (
+              <motion.div 
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="bg-yellow-50 dark:bg-yellow-950/20 border border-yellow-100 dark:border-yellow-900/30 text-yellow-700 dark:text-yellow-300 px-4 py-3 rounded-2xl text-xs font-semibold mb-6 flex items-center gap-2"
+              >
+                <div className="w-1.5 h-1.5 rounded-full bg-yellow-500 flex-shrink-0" />
+                <span>{googleError}</span>
+              </motion.div>
+            )}
 
             <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Username Input */}
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-gray-600 dark:text-gray-400 uppercase tracking-wider pl-1">
-                  Nombre de Usuario
+                  Nombre de usuario
                 </label>
                 <div className="relative">
                   <span className="absolute inset-y-0 left-0 flex items-center pl-4 text-gray-400">
@@ -352,7 +449,7 @@ export default function AuthView({ onLoginSuccess }: AuthViewProps) {
               </div>
 
               {/* Action Buttons */}
-              <div className="pt-4">
+              <div className="pt-4 space-y-4">
                 <button
                   type="submit"
                   disabled={isSubmitting}
@@ -372,6 +469,10 @@ export default function AuthView({ onLoginSuccess }: AuthViewProps) {
                     </>
                   )}
                 </button>
+
+                {GOOGLE_CLIENT_ID && (
+              <div ref={googleButtonRef} className="w-full" />
+            )}
               </div>
             </form>
 

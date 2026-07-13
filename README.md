@@ -16,6 +16,12 @@ View your app in AI Studio: https://ai.studio/apps/3a948f87-e16a-4b08-b6e8-2da9e
 1. Install dependencies:
    `npm install`
 2. Set `MONGODB_URI` and `GEMINI_API_KEY` in [.env.local](.env.local)
+
+
+1. Paso 1: Encender la base de datos (Docker)
+
+docker-compose up -d
+
 3. Start the backend in one terminal:
    `npm run server`
 4. Start the frontend in another terminal:
