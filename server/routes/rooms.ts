@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { RoomModel } from '../models/Room.js';
 import type { CreateRoomRequestBody, JoinRoomRequestBody } from '../types.js';
-import { generateRoomCode } from '../utils/roomUtils.js'; // Import from utility
+import { generateRoomCode } from '../utils/roomUtils.js';
 
 export const roomsRouter = Router();
 
@@ -13,7 +13,6 @@ async function createUniqueRoomCode() {
       return roomCode;
     }
   }
-
   throw new Error('No se pudo generar un código de sala único.');
 }
 
@@ -90,7 +89,7 @@ roomsRouter.get('/:roomCode', async (req, res, next) => {
 
 roomsRouter.post('/:roomCode/join', async (req, res, next) => {
   try {
-    const body = req.body as JoinRoomRequestBody; // Explicitly type req.body
+    const body = req.body as JoinRoomRequestBody;
     const room = await RoomModel.findOne({ roomCode: req.params.roomCode });
 
     if (!room) {
@@ -105,7 +104,7 @@ roomsRouter.post('/:roomCode/join', async (req, res, next) => {
     }
 
     const existingPlayerIndex = room.players.findIndex((item) =>
-      item.username.toLowerCase() === player.username.toLowerCase(),
+      item.username.toLowerCase() === player.username.toLowerCase()
     );
 
     const nextPlayer = {

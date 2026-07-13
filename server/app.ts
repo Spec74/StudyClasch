@@ -8,7 +8,11 @@ import { paymentRouter } from './routes/payment';
 
 export const app = express();
 
-app.use(cors());
+// CORS Blindado para la API REST (Acepta peticiones desde Vercel)
+app.use(cors({
+  origin: '*'
+}));
+
 app.use(express.json({ limit: '50mb' }));
 
 app.get('/api/health', (_req, res) => {
@@ -21,9 +25,9 @@ app.use('/api/rooms', roomsRouter);
 app.use('/api/quizzes', quizzesRouter);
 app.use('/api/payments', paymentRouter);
 
+// Manejador de errores limpio (sin asteriscos)
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   console.error(error);
-
   const message = error instanceof Error ? error.message : 'Unexpected server error.';
   res.status(500).json({ error: message });
 });

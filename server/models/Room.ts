@@ -19,7 +19,7 @@ const triviaQuestionSchema = new Schema<TriviaQuestion>(
   {
     id: { type: Number, required: true },
     question: { type: String, required: true },
-    options: { type: triviaQuestionOptionsSchema, required: true }, // Usamos el esquema de opciones
+    options: { type: triviaQuestionOptionsSchema, required: true },
     correctOption: { type: String, required: true, enum: ['A', 'B', 'C', 'D'] },
   },
   { _id: false } // No necesitamos un _id para este subdocumento
@@ -34,7 +34,7 @@ const roomPlayerSchema = new Schema<RoomPlayer>(
     isReady: { type: Boolean, required: true, default: false },
     socketId: { type: String },
   },
-  { _id: false },
+  { _id: false }
 );
 
 const roomSchema = new Schema<RoomRecord>(
@@ -44,14 +44,13 @@ const roomSchema = new Schema<RoomRecord>(
     status: { type: String, required: true, default: 'lobby' },
     fileName: { type: String, required: true },
     prompt: { type: String, required: true },
-    questions: { type: [triviaQuestionSchema], required: true }, // Usamos el esquema de preguntas
+    questions: { type: [triviaQuestionSchema], required: true },
     mode: { type: String, required: true, default: 'BATTLE_ROYALE' },
     timer: { type: Number, required: true, default: 30 },
     difficulty: { type: String, required: true, default: 'NORMAL' },
     players: { type: [roomPlayerSchema], required: true, default: [] },
   },
-  { timestamps: true },
+  { timestamps: true }
 );
 
-export const RoomModel: Model<RoomRecord> =
-  (models.Room as Model<RoomRecord>) ?? model<RoomRecord>('Room', roomSchema);
+export const RoomModel: Model<RoomRecord> = (models.Room as Model<RoomRecord>) ?? model<RoomRecord>('Room', roomSchema);
