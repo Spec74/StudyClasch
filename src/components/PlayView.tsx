@@ -10,15 +10,6 @@ import {
 } from 'lucide-react';
 import io from 'socket.io-client';
 
-// ============================================================================
-// 🔥 MEMORIA GLOBAL INMORTAL 🔥
-// Estas variables viven fuera del componente para que React no pueda borrarlas
-// ============================================================================
-let globalSocket: ReturnType<typeof io> | null = null;
-let globalRoomCode = '';
-let globalCurrentRoom: RoomRecord | null = null;
-let globalQuestions: TriviaQuestion[] = [];
-
 interface PlayViewProps {
   user: UserProfile;
   activeAvatarImage: string;
@@ -28,6 +19,7 @@ interface PlayViewProps {
   cosmetics: CosmeticItem[];
   currentScreen: AppScreen;
   setCurrentScreen: (screen: AppScreen) => void;
+  joinRoomCode?: string; // Código para unirse a una sala existente
 }
 
 const defaultApiUrl = 'http://localhost:4001';
@@ -41,19 +33,15 @@ export default function PlayView({
   onCompleteGame,
   currentScreen,
   setCurrentScreen,
-  cosmetics
+  cosmetics,
+  joinRoomCode
 }: PlayViewProps) {
   
-  // --- Estados vinculados a la memoria global ---
-  const [roomCode, setRoomCodeState] = useState<string>(globalRoomCode);
-  const [currentRoom, setCurrentRoomState] = useState<RoomRecord | null>(globalCurrentRoom);
-  const [questions, setQuestionsState] = useState<TriviaQuestion[]>(globalQuestions.length > 0 ? globalQuestions : HISTORY_QUESTIONS);
-  const [socket, setSocket] = useState<ReturnType<typeof io> | null>(globalSocket);
-
-  // Funciones para actualizar ambos (pantalla y memoria global)
-  const updateRoomCode = (code: string) => { globalRoomCode = code; setRoomCodeState(code); };
-  const updateCurrentRoom = (room: RoomRecord | null) => { globalCurrentRoom = room; setCurrentRoomState(room); };
-  const updateQuestions = (q: TriviaQuestion[]) => { globalQuestions = q; setQuestionsState(q); };
+  // --- Estados locales del componente. React gestionará su persistencia. ---
+  const [socket, setSocket] = useState<ReturnType<typeof io> | null>(null);
+  const [roomCode, setRoomCode] = useState<string>('');
+  const [currentRoom, setCurrentRoom] = useState<RoomRecord | null>(null);
+  const [questions, setQuestions] = useState<TriviaQuestion[]>(HISTORY_QUESTIONS);
 
   // --- Upload State ---
   const [selectedFile, setSelectedFile] = useState<{ name: string; size: string; category?: 'history' | 'marketing'; source: 'upload' | 'sample' } | null>(null);
@@ -76,17 +64,31 @@ export default function PlayView({
   const [gameCountdown, setGameCountdown] = useState(30);
   const [selectedAnswer, setSelectedAnswer] = useState<'A' | 'B' | 'C' | 'D' | null>(null);
   const [answerFrozen, setAnswerFrozen] = useState(false);
-  const [correctAnswersCount, setCorrectAnswersCount] = useState(0);
-  const [gameStreak, setGameStreak] = useState(0);
-  const [gamePoints, setGamePoints] = useState(0);
+  // Estado del jugador (puntuación, racha) controlado por el servidor
+  const [playerStats, setPlayerStats] = useState({ score: 0, streak: 0, correct: 0 });
+  const [resolvedCorrectAnswer, setResolvedCorrectAnswer] = useState<'A' | 'B' | 'C' | 'D' | null>(null);
+  const [gameOverData, setGameOverData] = useState<{ leaderboard: any[], winner: string | null } | null>(null);
 
   // Inicializar Socket una sola vez y no desconectarlo al recargar
+  // Se conecta cuando el componente se monta y se desconecta cuando se desmonta.
   useEffect(() => {
-    if (!globalSocket) {
-      globalSocket = io(apiBaseUrl);
+    const newSocket = io(apiBaseUrl);
+    setSocket(newSocket);
+
+    // Limpieza: desconectar el socket cuando el componente se desmonte
+    return () => {
+      newSocket.disconnect();
+    };
+  }, []); // El array vacío asegura que esto solo se ejecute una vez
+
+  // Efecto para manejar la unión a una sala desde fuera (p. ej. HomeView)
+  useEffect(() => {
+    // Si se proporciona un código para unirse y estamos en la pantalla del lobby,
+    // establece el código de la sala para activar el proceso de unión.
+    if (joinRoomCode && currentScreen === AppScreen.PLAY_LOBBY) {
+      setRoomCode(joinRoomCode);
     }
-    setSocket(globalSocket);
-  }, []);
+  }, [joinRoomCode, currentScreen]);
 
   const handleSelectPredefinedFile = (category: 'history' | 'marketing') => {
     setIsUploading(true);
@@ -101,7 +103,7 @@ export default function PlayView({
           clearInterval(interval);
           setIsUploading(false);
           setSelectedFile({ name: fileName, size: fileSize, category, source: 'sample' });
-          updateQuestions(category === 'marketing' ? MARKETING_QUESTIONS : HISTORY_QUESTIONS);
+          setQuestions(category === 'marketing' ? MARKETING_QUESTIONS : HISTORY_QUESTIONS);
           return 100;
         }
         return prev + 20;
@@ -184,10 +186,10 @@ export default function PlayView({
           setIsGeneratingQuestions(true);
 
           aiQuestions = await generateQuestionsFromPdf(file);
-          updateQuestions(aiQuestions);
+          setQuestions(aiQuestions);
         } catch (error) {
           setGenerationError(error instanceof Error ? error.message : 'Error.');
-          updateQuestions(HISTORY_QUESTIONS);
+          setQuestions(HISTORY_QUESTIONS);
         } finally {
           setIsGeneratingQuestions(false);
         }
@@ -202,7 +204,7 @@ export default function PlayView({
     setIsUploading(false);
     setIsGeneratingQuestions(false);
     setGenerationError(null);
-    updateQuestions(HISTORY_QUESTIONS);
+    setQuestions(HISTORY_QUESTIONS);
   };
 
   const handleCreateRoom = async () => {
@@ -221,7 +223,6 @@ export default function PlayView({
           hostUsername: user.username,
           hostEmail: user.email,
           hostAvatarId: user.avatarId,
-          questions: questions,
           mode: selectedMode,
           timer: selectedTimer,
           difficulty: selectedDifficulty,
@@ -240,8 +241,8 @@ export default function PlayView({
         throw new Error('El backend no devolvió el código de sala.');
       }
 
-      updateRoomCode(newRoomCode);
-      updateCurrentRoom(roomPayload.room);
+      setRoomCode(newRoomCode);
+      setCurrentRoom(roomPayload.room);
       setCurrentScreen(AppScreen.PLAY_LOBBY);
     } catch (roomError) {
       setGenerationError(roomError instanceof Error ? roomError.message : 'Error al crear.');
@@ -263,16 +264,16 @@ export default function PlayView({
     };
 
     const onRoomState = (data: RoomRecord) => {
-      updateCurrentRoom(data);
-      updateRoomCode(data.roomCode);
+      setCurrentRoom(data);
+      setRoomCode(data.roomCode);
       setLobbyPlayers(data.players);
     };
 
     const onRoomStarted = (data: { roomCode: string; status: 'lobby' | 'live' | 'finished'; questions: TriviaQuestion[] }) => {
       if (currentRoom) {
-        updateCurrentRoom({ ...currentRoom, status: data.status, questions: data.questions });
+        setCurrentRoom({ ...currentRoom, status: data.status, questions: data.questions });
       }
-      updateQuestions(data.questions);
+      setQuestions(data.questions);
       handleStartQuiz();
     };
 
@@ -280,13 +281,8 @@ export default function PlayView({
       setGenerationError(data.message);
     };
 
-    const onRoomFinished = () => {
-      setCurrentScreen(AppScreen.PLAY_GAMEOVER);
-    };
-
     socket.on('room:state', onRoomState);
     socket.on('room:started', onRoomStarted);
-    socket.on('room:finished', onRoomFinished);
     socket.on('roomError', onRoomError);
 
     if (socket.connected) {
@@ -298,7 +294,6 @@ export default function PlayView({
     return () => {
       socket.off('room:state', onRoomState);
       socket.off('room:started', onRoomStarted);
-      socket.off('room:finished', onRoomFinished);
       socket.off('roomError', onRoomError);
       socket.off('connect', joinRoom);
     };
@@ -314,77 +309,103 @@ export default function PlayView({
   const handleStartGameAsHost = () => {
     if (!socket || !roomCode) return;
     if (currentRoom?.hostUsername !== user.username) return;
-    socket.emit('room:start', { roomCode });
+    socket.emit('room:start', { roomCode, questions });
   };
 
   const handleStartQuiz = () => {
     setCurrentQuestionIndex(0);
     setGameCountdown(selectedTimer);
+    setPlayerStats({ score: 0, streak: 0, correct: 0 });
     setSelectedAnswer(null);
     setAnswerFrozen(false);
-    setCorrectAnswersCount(0);
-    setGameStreak(0);
-    setGamePoints(0);
+    setResolvedCorrectAnswer(null);
+    setGameOverData(null);
     setCurrentScreen(AppScreen.PLAY_GAME);
   };
 
+  // --- Lógica del Socket conectada al Juego ---
   useEffect(() => {
-    if (currentScreen !== AppScreen.PLAY_GAME || answerFrozen) return;
+    if (!socket || currentScreen !== AppScreen.PLAY_GAME) return;
 
-    const timer = setInterval(() => {
-      setGameCountdown((prev) => {
-        if (prev <= 1) {
-          handleAnswerSelect(null);
-          return selectedTimer;
-        }
-        return prev - 1;
+    const onTimerTick = (timeLeft: number) => setGameCountdown(timeLeft);
+
+    const onPlayerUpdate = (data: { username: string; score: number; streak: number; correct: number }) => {
+      if (data.username === user.username) {
+        setPlayerStats({ score: data.score, streak: data.streak, correct: data.correct });
+      }
+    };
+
+    const onQuestionResolved = (data: { correctOption: 'A' | 'B' | 'C' | 'D', playersScores: any[] }) => {
+      setAnswerFrozen(true);
+      setResolvedCorrectAnswer(data.correctOption);
+    };
+
+    const onNextQuestion = (data: { nextIndex: number }) => {
+      setCurrentQuestionIndex(data.nextIndex);
+      setSelectedAnswer(null);
+      setAnswerFrozen(false);
+      setResolvedCorrectAnswer(null);
+    };
+
+    const onRoomFinished = (data: { leaderboard: any[], winner: string | null }) => {
+      // FIX: The leaderboard from the server contains the final scores, but sometimes
+      // the avatarId can be lost in the server-side process. We enrich the leaderboard
+      // data with the avatar information we already have from the lobby state (`lobbyPlayers`).
+      const enrichedLeaderboard = data.leaderboard.map(leaderboardPlayer => {
+        const lobbyPlayerInfo = lobbyPlayers.find(p => p.username === leaderboardPlayer.username);
+        return {
+          ...leaderboardPlayer,
+          // Use the avatarId from the lobby info if available, as a reliable fallback.
+          avatarId: lobbyPlayerInfo?.avatarId || leaderboardPlayer.avatarId,
+        };
       });
-    }, 1000);
+      setGameOverData({ ...data, leaderboard: enrichedLeaderboard });
+      const myStats = enrichedLeaderboard.find(p => p.username === user.username);
+      if (myStats) {
+        const gainedCoins = myStats.correct * 10 + (user.isPremium ? 20 : 0);
+        const gainedXp = myStats.correct * 15 * (user.isPremium ? 2 : 1);
+        onCompleteGame(myStats.correct, myStats.score, gainedXp, gainedCoins);
+      } else {
+        onCompleteGame(0, 0, 0, 0);
+      }
+      setCurrentScreen(AppScreen.PLAY_GAMEOVER);
+    };
 
-    return () => clearInterval(timer);
-  }, [currentScreen, currentQuestionIndex, answerFrozen, selectedTimer]);
+    socket.on('game:timer_tick', onTimerTick);
+    socket.on('game:player:update', onPlayerUpdate);
+    socket.on('game:question_resolved', onQuestionResolved);
+    socket.on('game:next_question', onNextQuestion);
+    socket.on('room:finished', onRoomFinished);
+
+    return () => {
+      socket.off('game:timer_tick', onTimerTick);
+      socket.off('game:player:update', onPlayerUpdate);
+      socket.off('game:question_resolved', onQuestionResolved);
+      socket.off('game:next_question', onNextQuestion);
+      socket.off('room:finished', onRoomFinished);
+    };
+  }, [socket, currentScreen, user.username, onCompleteGame, setCurrentScreen]);
 
   const handleAnswerSelect = (option: 'A' | 'B' | 'C' | 'D' | null) => {
-    if (answerFrozen) return;
-    
+    // [CORRECCIÓN] Si ya se ha seleccionado una respuesta para esta pregunta (selectedAnswer no es null)
+    // o si la pregunta ya ha sido resuelta por el servidor (answerFrozen es true), no hacer nada.
+    // Esto asegura que el bloqueo sea individual y previene múltiples envíos.
+    if (selectedAnswer !== null || answerFrozen || !socket || !roomCode) return;
+
+    // Solo establecemos la respuesta seleccionada. Esto dará feedback visual y
+    // deshabilitará los botones en la siguiente renderización gracias a la nueva condición del `disabled`.
     setSelectedAnswer(option);
-    setAnswerFrozen(true);
 
     const activeQuestion = questions[currentQuestionIndex];
-    const isCorrect = option === activeQuestion.correctOption;
+    if (!activeQuestion) return;
 
-    if (socket && roomCode) {
-      socket.emit('game:answer', {
-        roomCode,
-        username: user.username,
-        questionId: activeQuestion.id,
-        answer: option,
-        timeRemaining: gameCountdown,
-      });
-    }
-
-    if (isCorrect) {
-      setCorrectAnswersCount(prev => prev + 1);
-      setGameStreak(prev => prev + 1);
-      const speedBonus = Math.round((gameCountdown / selectedTimer) * 200);
-      setGamePoints(prev => prev + 1000 + (gameStreak * 100) + speedBonus);
-    } else {
-      setGameStreak(0);
-    }
-
-    setTimeout(() => {
-      if (currentQuestionIndex < questions.length - 1) {
-        setCurrentQuestionIndex(prev => prev + 1);
-        setGameCountdown(selectedTimer);
-        setSelectedAnswer(null);
-        setAnswerFrozen(false);
-      } else {
-        const gainedCoins = correctAnswersCount * 10 + (user.isPremium ? 20 : 0);
-        const gainedXp = correctAnswersCount * 15 * (user.isPremium ? 2 : 1);
-        onCompleteGame(correctAnswersCount, gamePoints, gainedXp, gainedCoins);
-        setCurrentScreen(AppScreen.PLAY_GAMEOVER);
-      }
-    }, 1500);
+    socket.emit('game:answer', {
+      roomCode,
+      username: user.username,
+      questionId: activeQuestion.id,
+      answer: option,
+      timeRemaining: gameCountdown,
+    });
   };
 
   const handleResetFlow = () => {
@@ -393,26 +414,23 @@ export default function PlayView({
     setSelectedTimer(30);
     setSelectedDifficulty(Difficulty.NORMAL);
     
-    // Limpiamos la memoria global
-    updateRoomCode('');
-    updateCurrentRoom(null);
+    // Limpiamos el estado local
+    setRoomCode('');
+    setCurrentRoom(null);
     setCurrentScreen(AppScreen.PLAY_UPLOAD);
   };
 
   const handleGoHome = () => {
-    updateRoomCode('');
-    updateCurrentRoom(null);
+    setRoomCode('');
+    setCurrentRoom(null);
     onNavigate(AppScreen.HOME);
   };
 
-  const playerRank = correctAnswersCount >= 9 ? 1 : correctAnswersCount >= 6 ? 2 : 3;
-  const firstPlacePlayer = playerRank === 1 ? user.username : 'Lucia_Master';
-  const secondPlacePlayer = playerRank === 2 ? user.username : (playerRank === 1 ? 'Lucia_Master' : 'Carlos_M');
-  const thirdPlacePlayer = playerRank === 3 ? user.username : (playerRank === 1 ? 'Carlos_M' : 'Alex_Dev');
-
-  const firstPlaceScore = playerRank === 1 ? gamePoints : 9200;
-  const secondPlaceScore = playerRank === 2 ? gamePoints : (playerRank === 1 ? 9200 : 8450);
-  const thirdPlaceScore = playerRank === 3 ? gamePoints : (playerRank === 1 ? 8450 : 7100);
+  const leaderboard = gameOverData?.leaderboard ?? [];
+  const firstPlace = leaderboard.length > 0 ? leaderboard[0] : null;
+  const secondPlace = leaderboard.length > 1 ? leaderboard[1] : null;
+  const thirdPlace = leaderboard.length > 2 ? leaderboard[2] : null;
+  const myRank = leaderboard.findIndex(p => p.username === user.username) + 1;
 
   return (
     <div className="w-full max-w-2xl mx-auto pb-12 relative">
@@ -694,10 +712,16 @@ export default function PlayView({
           </section>
 
           <div className="flex flex-col items-center gap-4">
-            <button onClick={handleStartGameAsHost} className="w-full max-w-sm bg-amber-500 hover:bg-amber-600 text-[#1a365d] hover:text-white font-display font-extrabold py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all bouncy-tap flex items-center justify-center gap-2">
+            <button
+              onClick={handleStartGameAsHost}
+              disabled={currentRoom?.hostUsername !== user.username}
+              className="w-full max-w-sm bg-amber-500 hover:bg-amber-600 text-[#1a365d] hover:text-white font-display font-extrabold py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all bouncy-tap flex items-center justify-center gap-2 disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+            >
               <Play size={16} className="fill-current" /> Comenzar Partida
             </button>
-            <p className="text-gray-400 text-[10px] font-bold uppercase tracking-wider text-center max-w-xs px-4">Solo el anfitrión puede iniciar.</p>
+            {currentRoom?.hostUsername !== user.username && (
+              <p className="text-gray-400 text-[10px] font-bold uppercase tracking-wider text-center max-w-xs px-4">Solo el anfitrión puede iniciar.</p>
+            )}
           </div>
           
           {generationError && (
@@ -751,23 +775,32 @@ export default function PlayView({
             {(['A', 'B', 'C', 'D'] as const).map((key) => {
               const activeQuestion = questions[currentQuestionIndex];
               const label = activeQuestion.options[key];
-              const isSelected = selectedAnswer === key;
-              const isCorrectOption = key === activeQuestion.correctOption;
+              const isSelected = selectedAnswer === key; // La que el usuario seleccionó
+              const isCorrectOption = key === resolvedCorrectAnswer; // La correcta según el servidor
 
-              let optionStyle = 'border-gray-200 dark:border-gray-800 bg-white dark:bg-[#1e293b] hover:border-blue-400 dark:hover:border-blue-800';
-              if (answerFrozen) {
+              let optionStyle = 'border-gray-200 dark:border-gray-800 bg-white dark:bg-[#1e293b] hover:border-blue-400 dark:hover:border-blue-700';
+              if (resolvedCorrectAnswer) { // Usar el estado de resolución para colorear
                 if (isCorrectOption) {
-                  optionStyle = 'border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300 ring-2 ring-emerald-500/20';
+                  optionStyle = 'border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300 ring-2 ring-emerald-500/20 scale-105';
                 } else if (isSelected) {
                   optionStyle = 'border-red-500 bg-red-50 text-red-800 dark:bg-red-950/30 dark:text-red-300 ring-2 ring-red-500/20';
                 } else {
                   optionStyle = 'opacity-40 border-gray-100 dark:border-gray-800/40 bg-white dark:bg-[#1e293b]';
                 }
+              } else if (isSelected) {
+                // [MEJORA] Estilo de selección más prominente antes de que se resuelva la pregunta.
+                optionStyle = 'border-blue-500 bg-blue-50 dark:bg-blue-950/40 ring-2 ring-blue-500/20';
               }
 
               return (
-                <button key={key} disabled={answerFrozen} onClick={() => handleAnswerSelect(key)} className={'answer-card p-5 rounded-2xl border-2 font-semibold text-sm md:text-base flex items-center gap-4 text-left transition-all ' + optionStyle}>
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-mono font-black text-sm flex-shrink-0 transition-colors ${answerFrozen ? (isCorrectOption ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white') : 'bg-gray-100 dark:bg-gray-800 text-[#2b6cb0] group-hover:bg-[#2b6cb0] group-hover:text-white'}`}>
+                <button
+                  key={key}
+                  // [CORRECCIÓN] El botón se deshabilita si el jugador ya eligió (selectedAnswer) o si el servidor resolvió (answerFrozen)
+                  disabled={selectedAnswer !== null || answerFrozen}
+                  onClick={() => handleAnswerSelect(key)}
+                  className={`answer-card p-5 rounded-2xl border-2 font-semibold text-sm md:text-base flex items-center gap-4 text-left transition-all duration-300 ${optionStyle}`}
+                >
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-mono font-black text-sm flex-shrink-0 transition-colors ${resolvedCorrectAnswer ? (isCorrectOption ? 'bg-emerald-500 text-white' : 'bg-red-500 text-white') : 'bg-gray-100 dark:bg-gray-800 text-[#2b6cb0] group-hover:bg-[#2b6cb0] group-hover:text-white'}`}>
                     {key}
                   </div>
                   <span className="text-gray-700 dark:text-gray-300 leading-tight">{label}</span>
@@ -781,19 +814,19 @@ export default function PlayView({
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-1.5 bg-red-50 dark:bg-red-950/20 px-4 py-2 rounded-full">
                   <Flame className="w-4 h-4 text-red-500 fill-red-500" />
-                  <span className="text-xs font-bold text-red-600 dark:text-red-400">Racha: {gameStreak}</span>
+                  <span className="text-xs font-bold text-red-600 dark:text-red-400">Racha: {playerStats.streak}</span>
                 </div>
                 <div className="flex items-center gap-1.5 bg-blue-50 dark:bg-blue-950/20 px-4 py-2 rounded-full">
                   <span className="material-symbols-outlined text-amber-500 text-base material-symbols-fill select-none">monetization_on</span>
-                  <span className="text-xs font-bold text-[#2b6cb0]">{gamePoints} pts</span>
+                  <span className="text-xs font-bold text-[#2b6cb0]">{playerStats.score} pts</span>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">Lobby Pos:</span>
-                <div className="flex -space-x-1">
-                  <img className="w-6 h-6 rounded-full border border-white" src={activeAvatarImage} alt="You" />
-                  <div className="w-6 h-6 rounded-full bg-amber-500 text-[#1a365d] text-[10px] font-black flex items-center justify-center border border-white">{playerRank}º</div>
-                </div>
+                {myRank > 0 && <div className="flex -space-x-1">
+                  <img className="w-6 h-6 rounded-full border border-white" src={activeAvatarImage} alt="Tú" />
+                  <div className="w-6 h-6 rounded-full bg-amber-500 text-[#1a365d] text-[10px] font-black flex items-center justify-center border border-white">{myRank}º</div>
+                </div>}
               </div>
             </div>
           </footer>
@@ -815,42 +848,45 @@ export default function PlayView({
           </div>
 
           <div className="flex items-end justify-center gap-4 relative h-[280px] bg-white dark:bg-[#1e293b]/50 p-6 rounded-3xl border border-gray-100 dark:border-gray-800/80 shadow-sm overflow-hidden pt-12 max-w-lg mx-auto">
-            <div className="flex flex-col items-center w-1/3">
+            {/* 2nd Place */}
+            {secondPlace && <div className="flex flex-col items-center w-1/3">
               <div className="relative mb-2">
                 <div className="w-14 h-14 rounded-full border-2 border-gray-300 overflow-hidden bg-gray-50 shadow-md">
-                  <img className="w-full h-full object-cover" src={playerRank === 2 ? activeAvatarImage : 'https://via.placeholder.com/150'} alt="2nd Place" />
+                  <img className="w-full h-full object-cover" src={cosmetics.find(c => c.id === secondPlace.avatarId)?.image || 'https://via.placeholder.com/150'} alt="2nd Place" />
                 </div>
                 <div className="absolute -bottom-1 -right-1 bg-gray-300 text-gray-800 rounded-full w-6 h-6 flex items-center justify-center font-bold text-xs">2</div>
               </div>
-              <span className="font-sans font-bold text-[11px] text-gray-700 dark:text-gray-300 truncate w-full text-center">{secondPlacePlayer}</span>
-              <span className="text-[10px] text-gray-400 font-semibold">{secondPlaceScore} pts</span>
+              <span className="font-sans font-bold text-[11px] text-gray-700 dark:text-gray-300 truncate w-full text-center">{secondPlace.username}</span>
+              <span className="text-[10px] text-gray-400 font-semibold">{secondPlace.score} pts</span>
               <div className="w-full bg-gray-100 dark:bg-gray-800 rounded-t-xl h-20 mt-2 border-t-2 border-gray-300" />
-            </div>
+            </div>}
 
-            <div className="flex flex-col items-center w-1/3">
+            {/* 1st Place */}
+            {firstPlace && <div className="flex flex-col items-center w-1/3">
               <div className="relative mb-2">
                 <div className="absolute -top-7 left-1/2 -translate-x-1/2 text-amber-500 fill-amber-500 animate-bounce"><Trophy size={28} className="fill-current" /></div>
                 <div className="w-18 h-14 rounded-full border-4 border-amber-400 overflow-hidden bg-gray-50 shadow-xl ring-4 ring-amber-300/30">
-                  <img className="w-full h-full object-cover" src={playerRank === 1 ? activeAvatarImage : 'https://via.placeholder.com/150'} alt="1st Place" />
+                  <img className="w-full h-full object-cover" src={cosmetics.find(c => c.id === firstPlace.avatarId)?.image || 'https://via.placeholder.com/150'} alt="1st Place" />
                 </div>
                 <div className="absolute -bottom-1 -right-1 bg-amber-400 text-[#1a365d] rounded-full w-7 h-7 flex items-center justify-center font-black text-sm border border-amber-100 shadow-md">1</div>
               </div>
-              <span className="font-sans font-bold text-xs text-gray-800 dark:text-white truncate w-full text-center">{firstPlacePlayer}</span>
-              <span className="text-[10px] text-amber-600 font-bold">{firstPlaceScore} pts</span>
+              <span className="font-sans font-bold text-xs text-gray-800 dark:text-white truncate w-full text-center">{firstPlace.username}</span>
+              <span className="text-[10px] text-amber-600 font-bold">{firstPlace.score} pts</span>
               <div className="w-full bg-amber-100 dark:bg-amber-950/20 rounded-t-xl h-28 mt-2 border-t-2 border-amber-400 shadow-sm" />
-            </div>
+            </div>}
 
-            <div className="flex flex-col items-center w-1/3">
+            {/* 3rd Place */}
+            {thirdPlace && <div className="flex flex-col items-center w-1/3">
               <div className="relative mb-2">
                 <div className="w-12 h-12 rounded-full border-2 border-amber-600 overflow-hidden bg-gray-50 shadow-md">
-                  <img className="w-full h-full object-cover" src={playerRank === 3 ? activeAvatarImage : 'https://via.placeholder.com/150'} alt="3rd Place" />
+                  <img className="w-full h-full object-cover" src={cosmetics.find(c => c.id === thirdPlace.avatarId)?.image || 'https://via.placeholder.com/150'} alt="3rd Place" />
                 </div>
                 <div className="absolute -bottom-1 -right-1 bg-amber-700 text-white rounded-full w-5 h-5 flex items-center justify-center font-bold text-[10px]">3</div>
               </div>
-              <span className="font-sans font-bold text-[11px] text-gray-700 dark:text-gray-300 truncate w-full text-center">{thirdPlacePlayer}</span>
-              <span className="text-[10px] text-gray-400 font-semibold">{thirdPlaceScore} pts</span>
+              <span className="font-sans font-bold text-[11px] text-gray-700 dark:text-gray-300 truncate w-full text-center">{thirdPlace.username}</span>
+              <span className="text-[10px] text-gray-400 font-semibold">{thirdPlace.score} pts</span>
               <div className="w-full bg-orange-100/50 dark:bg-orange-950/10 rounded-t-xl h-16 mt-2 border-t-2 border-amber-700" />
-            </div>
+            </div>}
           </div>
 
           <section className="bg-white dark:bg-[#1e293b] rounded-3xl p-5 shadow-md border border-gray-100 dark:border-gray-800/80 max-w-lg mx-auto space-y-4">
@@ -859,13 +895,13 @@ export default function PlayView({
               <div className="bg-gray-50 dark:bg-gray-800 p-3 rounded-2xl flex flex-col items-center text-center">
                 <CheckCircle className="w-4 h-4 text-emerald-600 mb-1" />
                 <p className="text-[9px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">Aciertos</p>
-                <p className="font-mono text-xl font-black text-emerald-600 dark:text-emerald-400 mt-1">{correctAnswersCount}/{questions.length}</p>
+                <p className="font-mono text-xl font-black text-emerald-600 dark:text-emerald-400 mt-1">{playerStats.correct}/{questions.length}</p>
               </div>
 
               <div className="bg-gray-50 dark:bg-gray-800 p-3 rounded-2xl flex flex-col items-center text-center">
                 <span className="material-symbols-outlined text-amber-500 text-base material-symbols-fill select-none mb-1">monetization_on</span>
                 <p className="text-[9px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">Puntos</p>
-                <p className="font-mono text-xl font-black text-amber-600 dark:text-amber-400 mt-1">{gamePoints}</p>
+                <p className="font-mono text-xl font-black text-amber-600 dark:text-amber-400 mt-1">{playerStats.score}</p>
               </div>
 
               <div className="bg-gray-50 dark:bg-gray-800 p-3 rounded-2xl flex flex-col items-center text-center">
@@ -873,12 +909,12 @@ export default function PlayView({
                 <p className="text-[9px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest">XP Ganada</p>
                 <div className="flex flex-col items-center">
                   <p className="font-mono text-xl font-black text-[#2b6cb0] mt-1">
-                    +{correctAnswersCount * 15 * (user.isPremium ? 2 : 1)}
+                    +{playerStats.correct * 15 * (user.isPremium ? 2 : 1)}
                   </p>
                   <div className="w-16 h-1 bg-gray-200 dark:bg-gray-700 rounded-full mt-1.5 overflow-hidden">
                     <div className="h-full bg-blue-500" style={{ width: '75%' }} />
                   </div>
-                  <p className="text-[8px] font-black text-[#2b6cb0] mt-0.5">LVL {user.level} → LVL {user.level + (user.xp + correctAnswersCount * 15 * (user.isPremium ? 2 : 1) >= user.maxXp ? 1 : 0)}</p>
+                  <p className="text-[8px] font-black text-[#2b6cb0] mt-0.5">LVL {user.level} → LVL {user.level + (user.xp + playerStats.correct * 15 * (user.isPremium ? 2 : 1) >= user.maxXp ? 1 : 0)}</p>
                 </div>
               </div>
             </div>

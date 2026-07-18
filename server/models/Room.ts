@@ -44,7 +44,7 @@ const roomSchema = new Schema<RoomRecord>(
     status: { type: String, required: true, default: 'lobby' },
     fileName: { type: String, required: true },
     prompt: { type: String, required: true },
-    questions: { type: [triviaQuestionSchema], required: true },
+    questions: { type: [triviaQuestionSchema], required: false, default: [] },
     mode: { type: String, required: true, default: 'BATTLE_ROYALE' },
     timer: { type: Number, required: true, default: 30 },
     difficulty: { type: String, required: true, default: 'NORMAL' },

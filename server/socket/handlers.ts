@@ -19,6 +19,7 @@ interface GameAnswerPayload {
 }
 
 interface PlayerGameState {
+  avatarId: string;
   answers: Array<{ questionId: number; answer: 'A' | 'B' | 'C' | 'D' | null; timeRemaining: number }>;
   score: number;
   correct: number;
@@ -55,6 +56,7 @@ function makeLeaderboard(session: GameSession) {
   return Object.entries(session.players)
     .map(([username, stats]) => ({
       username,
+      avatarId: stats.avatarId,
       score: stats.score,
       correct: stats.correct,
       answered: stats.answers.length,
@@ -71,6 +73,7 @@ interface JoinRoomPayload {
 
 interface StartGamePayload {
   roomCode: string;
+  questions: TriviaQuestion[];
 }
 
 // Función helper para emitir el estado de la sala
@@ -133,7 +136,7 @@ function resolveCurrentQuestion(io: SocketIOServer, roomCode: string) {
   // Estructura de puntuaciones para que el cliente actualice su UI al unísono
   const playersScores = Object.entries(session.players).map(([username, state]) => ({
     username,
-    points: state.score,
+    score: state.score,
     streak: state.streak,
   }));
 
@@ -225,15 +228,14 @@ export function setupSocketIO(io: SocketIOServer) {
           socketId: socket.id,
         };
 
-        const existingPlayerIndex = room.players.findIndex(
+        const existingPlayer = room.players.find(
           (p) => p.username.toLowerCase() === username.toLowerCase()
         );
 
-        if (existingPlayerIndex >= 0) {
-          room.players[existingPlayerIndex] = {
-            ...room.players[existingPlayerIndex],
-            ...nextPlayer,
-          };
+        if (existingPlayer) {
+          // El jugador ya existe (se está reconectando o es el anfitrión uniéndose).
+          // Actualizamos su socketId al nuevo.
+          existingPlayer.socketId = socket.id;
         } else {
           room.players.push(nextPlayer);
         }
@@ -250,33 +252,45 @@ export function setupSocketIO(io: SocketIOServer) {
 
     // 2. INICIAR PARTIDA (Solo ejecutado por el Anfitrión)
     socket.on('room:start', async (payload: StartGamePayload) => {
-      const roomCode = payload?.roomCode ?? socket.data.roomCode;
+      const { roomCode, questions } = payload;
       if (!roomCode) {
         socket.emit('roomError', { message: 'Código de sala no proporcionado.' });
         return;
       }
 
       try {
-        const room = await RoomModel.findOne({ roomCode });
+        const room = await RoomModel.findOne({ roomCode: roomCode });
         if (!room) {
           socket.emit('roomError', { message: 'Sala no encontrada para iniciar el juego.' });
           return;
         }
 
+        if (!questions || questions.length === 0) {
+          socket.emit('roomError', { message: 'No se proporcionaron preguntas para iniciar el juego.' });
+          return;
+        }
+
         room.status = 'live';
+        room.questions = questions as any; // Guardar las preguntas en la sala
         await room.save();
 
         // Inicialización de la sesión multijugador con control de preguntas
         const session: GameSession = {
           roomCode,
-          questions: room.questions as TriviaQuestion[],
+          questions: questions,
           players: {},
           currentQuestionIndex: 0,
           timerDuration: room.timer || 30, // Usa el tiempo configurado en la DB por el creador
         };
 
-        room.players.forEach((player) => {
+        // FIX: Convert the Mongoose room document to a plain object before accessing its players array.
+        // This ensures consistency with `emitRoomState` and prevents potential issues with
+        // Mongoose subdocuments not having all properties readily available.
+        const plainRoom = room.toObject();
+
+        plainRoom.players.forEach((player) => {
           session.players[player.username] = {
+            avatarId: player.avatarId,
             answers: [],
             score: 0,
             correct: 0,
@@ -342,6 +356,12 @@ export function setupSocketIO(io: SocketIOServer) {
         return;
       }
 
+      // [MEJORA] Asegurarse de que la respuesta es para la pregunta actual
+      if (questionId !== session.questions[session.currentQuestionIndex].id) {
+        console.warn(`[Socket.IO] ${username} intentó responder a una pregunta incorrecta.`);
+        return;
+      }
+
       const isCorrect = answer === question.correctOption;
       playerState.answers.push({ questionId, answer, timeRemaining });
       
@@ -384,28 +404,51 @@ export function setupSocketIO(io: SocketIOServer) {
         const room = await RoomModel.findOne({ roomCode });
         if (!room) return;
 
-        // Remover jugador de la lista
-        room.players = room.players.filter(
-          (player) => player.username.toLowerCase() !== username.toLowerCase()
-        );
+        const isHostDisconnecting = room.hostUsername.toLowerCase() === username.toLowerCase();
+        const playerIndex = room.players.findIndex(p => p.username.toLowerCase() === username.toLowerCase());
 
-        // Control de desconexión del host
-        if (room.hostUsername.toLowerCase() === username.toLowerCase()) {
-          if (room.players.length > 0) {
+        // [MEJORA] Limpiar al jugador de la sesión de juego activa si existe
+        const session = gameSessions.get(roomCode);
+        if (session && session.players[username]) {
+          // Si un jugador que no es host se desconecta, lo eliminamos de la sesión activa
+          // Nota: La reconexión a mitad de partida es un desafío complejo. Este cambio
+          // simplemente limpia el estado del jugador, pero no permite que se reincorpore con su puntaje.
+          if (!isHostDisconnecting) {
+            delete session.players[username];
+          }
+        }
+
+        // Si el jugador no se encuentra en la lista, no hay nada que hacer
+        if (playerIndex === -1) return;
+
+        // Remover al jugador del array de forma segura para Mongoose
+        room.players.splice(playerIndex, 1);
+
+
+
+        // Si el host se desconectó, migrar el rol de anfitrión
+        if (isHostDisconnecting) {
+          if (room.players.length > 0) { // Si quedan jugadores
+            // El siguiente jugador en la lista se convierte en el nuevo anfitrión
             room.players[0].isHost = true;
             room.hostUsername = room.players[0].username;
+          } else if (room.status === 'live') {
+            // [MEJORA] Si el host se va durante una partida, la partida termina.
+            console.log(`[Socket.IO] El host ${username} se fue de la partida ${roomCode}. Finalizando juego.`);
+            await endGameSession(io, roomCode);
+            return; // Salimos para evitar más procesamiento
           } else {
-            // Limpiar intervalos de tiempo si la sala queda vacía
-            const session = gameSessions.get(roomCode);
+            // La sala está vacía, la eliminamos por completo para no dejar basura
             if (session?.timerInterval) clearInterval(session.timerInterval);
             gameSessions.delete(roomCode);
-
             await RoomModel.deleteOne({ roomCode });
+            console.log(`[Socket.IO] Sala ${roomCode} eliminada porque el último jugador (host) se fue.`);
             return;
           }
         }
 
         await room.save();
+        // Notificar a los jugadores restantes sobre el cambio en la sala
         emitRoomState(io, room.toObject());
       } catch (error) {
         console.error(`[Socket.IO] Error al manejar desconexión de ${username}:`, error);

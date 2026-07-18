@@ -36,10 +36,10 @@ function toRoomResponse(room: any) {
 
 roomsRouter.post('/', async (req, res, next) => {
   try {
-    const { hostUsername, hostEmail, hostAvatarId, questions, mode, timer, difficulty, fileName, prompt } = req.body as CreateRoomRequestBody;
+    const { hostUsername, hostEmail, hostAvatarId, mode, timer, difficulty, fileName, prompt } = req.body as CreateRoomRequestBody;
 
-    if (!hostUsername || !hostAvatarId || !questions?.length) {
-      res.status(400).json({ error: 'host and quiz.questions are required.' });
+    if (!hostUsername || !hostAvatarId) {
+      res.status(400).json({ error: 'hostUsername and hostAvatarId are required.' });
       return;
     }
 
@@ -51,7 +51,6 @@ roomsRouter.post('/', async (req, res, next) => {
       status: 'lobby',
       fileName: fileName ?? 'uploaded.pdf',
       prompt: prompt ?? 'Generated from PDF',
-      questions,
       mode: mode ?? 'BATTLE_ROYALE',
       timer: timer ?? 30,
       difficulty: difficulty ?? 'NORMAL',

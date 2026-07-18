@@ -19,6 +19,7 @@ export default function App() {
   // --- Navigation & Flow State ---
   const [currentScreen, setCurrentScreen] = useState<AppScreen>(AppScreen.HOME);
   const [isPremiumOpen, setIsPremiumOpen] = useState(false);
+  const [roomCodeToJoin, setRoomCodeToJoin] = useState<string>('');
 
   // --- Auth State ---
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
@@ -237,6 +238,7 @@ export default function App() {
             onOpenPremium={() => setIsPremiumOpen(true)}
             onEquipCosmetic={handleEquipCosmetic}
             onJoinRoom={(code) => {
+              setRoomCodeToJoin(code);
               setCurrentScreen(AppScreen.PLAY_LOBBY);
             }}
           />
@@ -291,6 +293,7 @@ export default function App() {
             cosmetics={cosmetics} // Pass cosmetics down
             currentScreen={currentScreen}
             setCurrentScreen={setCurrentScreen}
+            joinRoomCode={roomCodeToJoin}
           />
         );
 
